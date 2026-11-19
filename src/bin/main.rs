@@ -27,19 +27,33 @@ const CONNECTIONS_MAX: usize = 1;
 /// Max number of L2CAP channels.
 const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 
-// GATT Server definition - custom RC Car control service
+// GATT Server definition - Nordic UART Service (standart, tum Terminal uygulamalari tanir)
 #[gatt_server]
 struct Server {
-    control_service: ControlService,
+    nus: NordicUartService,
 }
 
-/// Custom control service for RC Car commands
-#[gatt_service(uuid = "a9c81b72-0f7a-4c59-b0a8-425e3bcf0a0e")]
-struct ControlService {
-    /// Write a single character (letter) here to send a command.
-    /// e.g. 'w' ileri, 's' geri, 'a' sol, 'd' sag, etc.
-    #[characteristic(uuid = "c79b2ca7-f39d-4060-8168-816fa26737b7", write, read)]
-    command: u8,
+/// Nordic UART Service
+/// Service UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+#[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
+struct NordicUartService {
+    /// RX Characteristic (telefon -> cihaz). Komutlar buraya yazilir.
+    /// UUID: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+    #[characteristic(
+        uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+        write,
+        write_without_response
+    )]
+    rx: [u8; 20],
+
+    /// TX Characteristic (cihaz -> telefon). Ileride cevap gondermek icin.
+    /// UUID: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+    #[characteristic(
+        uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+        notify,
+        read
+    )]
+    tx: [u8; 20],
 }
 
 #[esp_rtos::main]
@@ -56,7 +70,7 @@ async fn main(_spawner: Spawner) {
     let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
-    info!("RCCar BLE baslatiliyor (ESP32-C3 SuperMini)...");
+    info!("RCCar BLE baslatiliyor (ESP32-C3 SuperMini) - Nordic UART Service");
 
     let connector = BleConnector::new(peripherals.BT, Default::default()).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
@@ -93,7 +107,7 @@ where
         loop {
             match advertise("RCCar", &mut peripheral, &server).await {
                 Ok(conn) => {
-                    info!("Baglandi! Komut bekleniyor...");
+                    info!("Baglandi! Komut bekleniyor (NUS)...");
                     // Handle GATT events until disconnect
                     let _ = gatt_events_task(&server, &conn).await;
                     info!("Baglanti koptu, tekrar yayin basliyor...");
@@ -117,12 +131,12 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     }
 }
 
-/// Handle GATT events (especially writes to the command characteristic).
+/// Handle GATT events (especially writes to the NUS RX characteristic).
 async fn gatt_events_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
 ) -> Result<(), Error> {
-    let command_char = server.control_service.command;
+    let rx_char = server.nus.rx;
 
     let reason = loop {
         match conn.next().await {
@@ -130,17 +144,20 @@ async fn gatt_events_task<P: PacketPool>(
             GattConnectionEvent::Gatt { event } => {
                 match &event {
                     GattEvent::Write(event) => {
-                        if event.handle() == command_char.handle {
+                        if event.handle() == rx_char.handle {
                             let data = event.data();
-                            if let Some(&byte) = data.first() {
-                                let ch = byte as char;
-                                // Harfe gore logla
-                                match ch.to_ascii_lowercase() {
+                            // Bosluk, CR, LF ve null karakterleri atla, ilk gecerli karakteri al
+                            if let Some(&byte) = data
+                                .iter()
+                                .find(|&&b| b != b'\r' && b != b'\n' && b != b' ' && b != 0)
+                            {
+                                let ch = (byte as char).to_ascii_lowercase();
+                                match ch {
                                     'w' => info!("'w' basildi -> ILERI"),
                                     's' => info!("'s' basildi -> GERI"),
                                     'a' => info!("'a' basildi -> SOL"),
                                     'd' => info!("'d' basildi -> SAG"),
-                                    ' ' => info!("' ' (bosluk) basildi -> DUR"),
+                                    'x' => info!("'x' basildi -> DUR"),
                                     c if c.is_ascii_alphanumeric() => {
                                         info!("'{}' basildi", c);
                                     }
@@ -148,14 +165,17 @@ async fn gatt_events_task<P: PacketPool>(
                                         info!("Bilinmeyen komut byte: 0x{:02x}", byte);
                                     }
                                 }
+                            } else if !data.is_empty() {
+                                // Sadece bosluk/CR/LF geldiyse DUR kabul et
+                                info!("Bosluk/CR alindi -> DUR");
                             } else {
                                 info!("Bos yazma alindi");
                             }
                         }
                     }
                     GattEvent::Read(event) => {
-                        if event.handle() == command_char.handle {
-                            info!("[gatt] command characteristic okundu");
+                        if event.handle() == rx_char.handle {
+                            info!("[gatt] RX characteristic okundu");
                         }
                     }
                     _ => {}
@@ -185,6 +205,12 @@ async fn advertise<'values, 'server, C: Controller>(
     let len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            // Nordic UART Service UUID (little-endian)
+            // 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+            AdStructure::ServiceUuids128(&[[
+                0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+                0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e,
+            ]]),
             AdStructure::CompleteLocalName(name.as_bytes()),
         ],
         &mut advertiser_data[..],
@@ -200,7 +226,7 @@ async fn advertise<'values, 'server, C: Controller>(
         )
         .await?;
 
-    info!("[adv] yayin yapiyor: {}", name);
+    info!("[adv] yayin yapiyor: {} (NUS)", name);
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     info!("[adv] baglanti kuruldu");
     Ok(conn)
