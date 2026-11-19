@@ -1,0 +1,37 @@
+[package]
+edition      = "2024"
+name         = "rccar"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[[bin]]
+name = "rccar"
+path = "./src/bin/main.rs"
+
+[dependencies]
+esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c3", "log-04"] }
+log = "0.4.27"
+critical-section = "1.2.0"
+esp-backtrace = { version = "0.19.0", features = ["esp32c3", "panic-handler", "println"] }
+esp-println = { version = "0.17.0", features = ["esp32c3", "log-04"] }
+
+# BLE + Embassy stack
+esp-alloc = "0.7"
+esp-rtos = { version = "0.3", features = ["esp32c3", "esp-radio", "embassy", "log-04"] }
+esp-radio = { version = "0.18", features = ["esp32c3", "ble", "log-04", "unstable"] }
+embassy-executor = "0.10"
+embassy-futures = "0.1"
+embassy-time = "0.5"
+embassy-sync = "0.7"
+trouble-host = { version = "0.6", features = ["default-packet-pool-mtu-255", "derive"] }
+static_cell = "2.1"
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug         = 2
+lto           = "fat"
+opt-level     = "s"
