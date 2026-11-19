@@ -17,9 +17,9 @@ esp-backtrace = { version = "0.19.0", features = ["esp32c3", "panic-handler", "p
 esp-println = { version = "0.17.0", features = ["esp32c3", "log-04"] }
 
 # BLE + Embassy stack
-esp-alloc = "0.7"
+esp-alloc = { version = "0.9", features = ["compat"] }
 esp-rtos = { version = "0.3", features = ["esp32c3", "esp-radio", "embassy", "log-04"] }
-esp-radio = { version = "0.18", features = ["esp32c3", "ble", "log-04", "unstable"] }
+esp-radio = { version = "0.18", features = ["esp32c3", "ble", "log-04", "unstable", "esp-alloc"] }
 embassy-executor = "0.10"
 embassy-futures = "0.1"
 embassy-time = "0.5"
